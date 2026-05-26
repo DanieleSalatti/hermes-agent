@@ -506,6 +506,28 @@ async def test_dm_message_explicitly_mentioning_agent_peer_is_ignored(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_thread_message_with_matrix_to_peer_pill_is_ignored(monkeypatch):
+    """Matrix mention pills without MXIDs should not become human-continuation replies."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "[lares](https://matrix.to/#/) what do you think?",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_thread_human_continuation_allows_human_without_mention(monkeypatch):
     """Human replies may continue a participated thread without re-mentioning."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)

@@ -2874,6 +2874,18 @@ class MatrixAdapter(BasePlatformAdapter):
                     re.IGNORECASE,
                 ):
                     return True
+                if localpart and re.search(
+                    r"\[(@?" + re.escape(localpart) + r")\]\(https://matrix\.to/#/[^)]*\)",
+                    text,
+                    re.IGNORECASE,
+                ):
+                    return True
+                if localpart and html and re.search(
+                    r">\s*@?" + re.escape(localpart) + r"\s*</a>",
+                    html,
+                    re.IGNORECASE,
+                ):
+                    return True
         return False
 
     def _strip_mention(self, body: str) -> str:
