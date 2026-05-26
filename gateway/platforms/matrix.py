@@ -1863,7 +1863,19 @@ class MatrixAdapter(BasePlatformAdapter):
             mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        mentioned_agent_peer = self._is_agent_peer_mentioned(
+            body, formatted_body, mention_user_ids
+        )
         sender_is_agent_peer = self._is_agent_peer(sender)
+
+        if mentioned_agent_peer and not is_mentioned:
+            logger.debug(
+                "Matrix: ignoring message %s in %s — addressed to agent peer",
+                event_id,
+                room_id,
+            )
+            self._observe_thread_message(room_id, thread_id, event_id, sender, display_name, body)
+            return None
 
         # Require-mention gating.
         should_process = True
@@ -2834,6 +2846,34 @@ class MatrixAdapter(BasePlatformAdapter):
         if formatted_body and self._user_id:
             if f"matrix.to/#/{self._user_id}" in formatted_body:
                 return True
+        return False
+
+    def _is_agent_peer_mentioned(
+        self,
+        body: str,
+        formatted_body: Optional[str] = None,
+        mention_user_ids: Optional[list] = None,
+    ) -> bool:
+        """Return True when the message explicitly addresses a configured peer bot."""
+        peers = {peer for peer in self._agent_peers if peer and peer != self._user_id}
+        if not peers:
+            return False
+        mentioned_ids = set(mention_user_ids or [])
+        if mentioned_ids.intersection(peers):
+            return True
+        text = body or ""
+        html = formatted_body or ""
+        for peer in peers:
+            if peer in text or f"matrix.to/#/{peer}" in html:
+                return True
+            if ":" in peer:
+                localpart = peer.split(":")[0].lstrip("@")
+                if localpart and re.search(
+                    r"(?<![\w])@" + re.escape(localpart) + r"\b",
+                    text,
+                    re.IGNORECASE,
+                ):
+                    return True
         return False
 
     def _strip_mention(self, body: str) -> str:

@@ -456,6 +456,7 @@ async def test_thread_require_mention_ignores_bare_localpart(monkeypatch):
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
     monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "false")
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
@@ -482,6 +483,26 @@ async def test_thread_require_mention_allows_explicit_at_localpart(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dm_message_explicitly_mentioning_agent_peer_is_ignored(monkeypatch):
+    """Shared-agent DMs should observe but not answer messages addressed to another bot."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+
+    event = _make_event(
+        "@lares:example.org what do you think?",
+        mention_user_ids=["@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
