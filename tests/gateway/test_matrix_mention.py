@@ -527,6 +527,79 @@ async def test_agent_peer_thread_continuation_requires_explicit_mention(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_agent_peer_explicit_reply_budget_blocks_second_peer_turn(monkeypatch):
+    """Only one consecutive explicit peer-agent invocation is handled by default."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS", "1")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    first = _make_event(
+        "@hermes sanity-check this",
+        sender="@menrva:example.org",
+        event_id="$peer1",
+        thread_id="$thread1",
+    )
+    second = _make_event(
+        "@hermes continue",
+        sender="@menrva:example.org",
+        event_id="$peer2",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(first)
+    await adapter._on_room_message(second)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.message_id == "$peer1"
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_reply_budget_resets_after_human_turn(monkeypatch):
+    """A human message in the thread resets the peer-agent reply budget."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS", "1")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes first peer turn",
+            sender="@menrva:example.org",
+            event_id="$peer1",
+            thread_id="$thread1",
+        )
+    )
+    await adapter._on_room_message(
+        _make_event("human reset", event_id="$human", thread_id="$thread1")
+    )
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes peer after reset",
+            sender="@menrva:example.org",
+            event_id="$peer2",
+            thread_id="$thread1",
+        )
+    )
+
+    assert adapter.handle_message.await_count == 3
+    assert adapter.handle_message.await_args_list[-1].args[0].message_id == "$peer2"
+
+
+@pytest.mark.asyncio
 async def test_observed_thread_context_is_injected_on_later_mention(monkeypatch):
     """Ignored thread messages are included when the bot is later invoked."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
@@ -849,6 +922,7 @@ class TestMatrixConfigBridge:
         monkeypatch.delenv("MATRIX_THREAD_HUMAN_CONTINUATION", raising=False)
         monkeypatch.delenv("MATRIX_OBSERVE_THREAD_CONTEXT", raising=False)
         monkeypatch.delenv("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES", raising=False)
+        monkeypatch.delenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS", raising=False)
         monkeypatch.delenv("MATRIX_AGENT_PEERS", raising=False)
 
         yaml_content = {
@@ -860,6 +934,7 @@ class TestMatrixConfigBridge:
                 "thread_human_continuation": True,
                 "observe_thread_context": True,
                 "observed_thread_context_messages": 40,
+                "max_consecutive_agent_peer_turns": 2,
                 "agent_peers": ["@lares:example.org", "@menrva:example.org"],
             }
         }
@@ -918,6 +993,13 @@ class TestMatrixConfigBridge:
                     "MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES",
                     str(matrix_cfg["observed_thread_context_messages"]),
                 )
+            if "max_consecutive_agent_peer_turns" in matrix_cfg and not os.getenv(
+                "MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS"
+            ):
+                monkeypatch.setenv(
+                    "MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS",
+                    str(matrix_cfg["max_consecutive_agent_peer_turns"]),
+                )
             ap = matrix_cfg.get("agent_peers")
             if ap is not None and not os.getenv("MATRIX_AGENT_PEERS"):
                 if isinstance(ap, list):
@@ -934,6 +1016,7 @@ class TestMatrixConfigBridge:
         assert os.getenv("MATRIX_THREAD_HUMAN_CONTINUATION") == "true"
         assert os.getenv("MATRIX_OBSERVE_THREAD_CONTEXT") == "true"
         assert os.getenv("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES") == "40"
+        assert os.getenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS") == "2"
         assert os.getenv("MATRIX_AGENT_PEERS") == "@lares:example.org,@menrva:example.org"
 
     def test_yaml_bridge_sets_dm_mention_threads(self, monkeypatch, tmp_path):

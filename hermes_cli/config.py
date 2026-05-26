@@ -1416,6 +1416,7 @@ DEFAULT_CONFIG = {
         "thread_human_continuation": False,  # If True, human replies may continue participated threads without re-mentioning
         "observe_thread_context": False,  # If True, buffer ignored thread messages and prepend them when triggered
         "observed_thread_context_messages": 30,  # Max observed thread messages to inject as context
+        "max_consecutive_agent_peer_turns": 1,  # Max peer-agent messages handled in a thread before a human resets it
         "agent_peers": "",             # Comma-separated Matrix user IDs for peer agents (explicit-only in threads)
     },
 
