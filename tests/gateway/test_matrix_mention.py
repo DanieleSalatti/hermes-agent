@@ -528,6 +528,52 @@ async def test_thread_message_with_matrix_to_peer_pill_is_ignored(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_thread_reply_to_self_with_peer_mention_is_ignored(monkeypatch):
+    """Reply metadata can mention this bot; visible peer mentions still route to the peer."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "[lares](https://matrix.to/#/@lares:example.org) what do you think?",
+        thread_id="$thread1",
+        mention_user_ids=["@hermes:example.org", "@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_reply_with_visible_self_and_peer_mentions_is_handled(monkeypatch):
+    """If the user visibly mentions both bots, this bot is genuinely addressed too."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "@hermes and @lares, compare notes",
+        thread_id="$thread1",
+        mention_user_ids=["@hermes:example.org", "@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_thread_human_continuation_allows_human_without_mention(monkeypatch):
     """Human replies may continue a participated thread without re-mentioning."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)

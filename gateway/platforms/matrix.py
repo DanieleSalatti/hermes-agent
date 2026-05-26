@@ -1897,12 +1897,13 @@ class MatrixAdapter(BasePlatformAdapter):
             mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        self_mentioned_in_visible_text = self._is_bot_mentioned(body, formatted_body, None)
         mentioned_agent_peer = self._is_agent_peer_mentioned(
             body, formatted_body, mention_user_ids
         )
         sender_is_agent_peer = self._is_agent_peer(sender)
 
-        if mentioned_agent_peer and not is_mentioned:
+        if mentioned_agent_peer and (not is_mentioned or not self_mentioned_in_visible_text):
             logger.debug(
                 "Matrix: ignoring message %s in %s — addressed to agent peer",
                 event_id,
