@@ -1118,6 +1118,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["MATRIX_OBSERVE_THREAD_CONTEXT"] = str(matrix_cfg["observe_thread_context"]).lower()
                 if "observed_thread_context_messages" in matrix_cfg and not os.getenv("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES"):
                     os.environ["MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES"] = str(matrix_cfg["observed_thread_context_messages"])
+                if "max_consecutive_agent_peer_turns" in matrix_cfg and not os.getenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS"):
+                    os.environ["MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS"] = str(matrix_cfg["max_consecutive_agent_peer_turns"])
                 ap = matrix_cfg.get("agent_peers")
                 if ap is not None and not os.getenv("MATRIX_AGENT_PEERS"):
                     if isinstance(ap, list):

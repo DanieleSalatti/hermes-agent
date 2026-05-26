@@ -436,7 +436,14 @@ class MatrixAdapter(BasePlatformAdapter):
         self._agent_peers: Set[str] = self._parse_string_set_config(
             config, "agent_peers", "MATRIX_AGENT_PEERS"
         )
+        self._max_consecutive_agent_peer_turns: int = self._parse_nonnegative_int_config(
+            config,
+            "max_consecutive_agent_peer_turns",
+            "MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS",
+            1,
+        )
         self._thread_observations: Dict[Tuple[str, str], Deque[_ObservedMatrixMessage]] = {}
+        self._thread_peer_turns: Dict[Tuple[str, str], int] = {}
         free_rooms_raw = config.extra.get("free_response_rooms")
         if free_rooms_raw is None:
             free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
@@ -569,6 +576,17 @@ class MatrixAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             return default
         return max(1, value)
+
+    @staticmethod
+    def _parse_nonnegative_int_config(config, key: str, env_var: str, default: int) -> int:
+        configured = config.extra.get(key)
+        if configured is None:
+            configured = os.getenv(env_var)
+        try:
+            value = int(configured) if configured is not None else default
+        except (TypeError, ValueError):
+            return default
+        return max(0, value)
 
     @staticmethod
     def _parse_string_set_config(config, key: str, env_var: str) -> Set[str]:
@@ -1767,6 +1785,33 @@ class MatrixAdapter(BasePlatformAdapter):
     def _is_agent_peer(self, sender: str) -> bool:
         return bool(sender and sender in self._agent_peers)
 
+    def _can_process_agent_peer_turn(
+        self,
+        room_id: str,
+        thread_id: Optional[str],
+        sender_is_agent_peer: bool,
+    ) -> bool:
+        if not sender_is_agent_peer:
+            return True
+        key = self._thread_buffer_key(room_id, thread_id)
+        if key is None:
+            return True
+        return self._thread_peer_turns.get(key, 0) < self._max_consecutive_agent_peer_turns
+
+    def _record_thread_turn(
+        self,
+        room_id: str,
+        thread_id: Optional[str],
+        sender_is_agent_peer: bool,
+    ) -> None:
+        key = self._thread_buffer_key(room_id, thread_id)
+        if key is None:
+            return
+        if sender_is_agent_peer:
+            self._thread_peer_turns[key] = self._thread_peer_turns.get(key, 0) + 1
+        else:
+            self._thread_peer_turns.pop(key, None)
+
     def _observe_thread_message(
         self,
         room_id: str,
@@ -1852,6 +1897,7 @@ class MatrixAdapter(BasePlatformAdapter):
             mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        sender_is_agent_peer = self._is_agent_peer(sender)
 
         # Require-mention gating.
         should_process = True
@@ -1870,13 +1916,28 @@ class MatrixAdapter(BasePlatformAdapter):
             else:
                 is_free_room = room_id in self._free_rooms
                 in_bot_thread = bool(thread_id and thread_id in self._threads)
-                sender_is_agent_peer = self._is_agent_peer(sender)
                 human_thread_continuation = (
                     self._thread_human_continuation
                     and in_bot_thread
                     and not sender_is_agent_peer
                 )
-                if self._require_mention and not is_free_room and not in_bot_thread:
+                if (
+                    thread_id
+                    and sender_is_agent_peer
+                    and is_mentioned
+                    and not self._can_process_agent_peer_turn(
+                        room_id, thread_id, sender_is_agent_peer
+                    )
+                ):
+                    logger.debug(
+                        "Matrix: ignoring agent peer message %s in thread %s — "
+                        "max_consecutive_agent_peer_turns=%s reached",
+                        event_id,
+                        thread_id,
+                        self._max_consecutive_agent_peer_turns,
+                    )
+                    should_process = False
+                elif self._require_mention and not is_free_room and not in_bot_thread:
                     if not is_mentioned:
                         logger.debug(
                             "Matrix: ignoring message %s in %s — no @mention "
@@ -1906,6 +1967,8 @@ class MatrixAdapter(BasePlatformAdapter):
                         should_process = False
 
         if not should_process:
+            if thread_id and not sender_is_agent_peer:
+                self._record_thread_turn(room_id, thread_id, sender_is_agent_peer)
             self._observe_thread_message(room_id, thread_id, event_id, sender, display_name, body)
             return None
 
@@ -1933,6 +1996,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         if thread_id:
             self._threads.mark(thread_id)
+            self._record_thread_turn(room_id, thread_id, sender_is_agent_peer)
             self._observe_thread_message(room_id, thread_id, event_id, sender, display_name, body)
 
         self._background_read_receipt(room_id, event_id)
