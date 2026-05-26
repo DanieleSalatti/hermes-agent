@@ -1412,6 +1412,11 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in rooms
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+        "thread_require_mention": False,  # If True, require @mention in bot-participated threads
+        "thread_human_continuation": False,  # If True, human replies may continue participated threads without re-mentioning
+        "observe_thread_context": False,  # If True, buffer ignored thread messages and prepend them when triggered
+        "observed_thread_context_messages": 30,  # Max observed thread messages to inject as context
+        "agent_peers": "",             # Comma-separated Matrix user IDs for peer agents (explicit-only in threads)
     },
 
     # Approval mode for dangerous commands:
