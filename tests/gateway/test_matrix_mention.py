@@ -91,11 +91,14 @@ class TestIsBotMentioned:
     def test_full_user_id_in_body(self):
         assert self.adapter._is_bot_mentioned("hey @hermes:example.org help")
 
-    def test_localpart_in_body(self):
-        assert self.adapter._is_bot_mentioned("hermes can you help?")
+    def test_bare_localpart_in_body_is_not_mention(self):
+        assert not self.adapter._is_bot_mentioned("hermes can you help?")
 
-    def test_localpart_case_insensitive(self):
-        assert self.adapter._is_bot_mentioned("HERMES can you help?")
+    def test_bare_localpart_case_insensitive_is_not_mention(self):
+        assert not self.adapter._is_bot_mentioned("HERMES can you help?")
+
+    def test_at_localpart_in_body(self):
+        assert self.adapter._is_bot_mentioned("@hermes can you help?")
 
     def test_matrix_pill_in_formatted_body(self):
         html = '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> help'
@@ -435,6 +438,7 @@ async def test_require_mention_bot_participated_thread(monkeypatch):
     """Threads with prior bot participation bypass mention requirement."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
@@ -444,6 +448,117 @@ async def test_require_mention_bot_participated_thread(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_ignores_bare_localpart(monkeypatch):
+    """Bare bot names in participated threads are not explicit mentions."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event("I agree with Hermes on that", thread_id="$thread1")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_allows_explicit_at_localpart(monkeypatch):
+    """Explicit @localpart still invokes the bot in participated threads."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event("@hermes what do you think?", thread_id="$thread1")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thread_human_continuation_allows_human_without_mention(monkeypatch):
+    """Human replies may continue a participated thread without re-mentioning."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event("continue this thought", thread_id="$thread1")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_thread_continuation_requires_explicit_mention(monkeypatch):
+    """Agent peers are observed but do not auto-continue participated threads."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "I think Hermes should consider routing.",
+        sender="@menrva:example.org",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_observed_thread_context_is_injected_on_later_mention(monkeypatch):
+    """Ignored thread messages are included when the bot is later invoked."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_OBSERVE_THREAD_CONTEXT", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    ignored = _make_event(
+        "Lares made a routing objection.",
+        sender="@menrva:example.org",
+        event_id="$evt-peer",
+        thread_id="$thread1",
+    )
+    invoked = _make_event(
+        "@hermes respond to Menrva",
+        event_id="$evt-human",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(ignored)
+    await adapter._on_room_message(invoked)
+
+    adapter.handle_message.assert_awaited_once()
+    msg_event = adapter.handle_message.await_args.args[0]
+    assert "[Matrix thread context observed before this message]" in msg_event.channel_context
+    assert "[menrva] Lares made a routing objection." in msg_event.channel_context
 
 
 @pytest.mark.asyncio
@@ -502,6 +617,7 @@ async def test_auto_thread_default_creates_thread(monkeypatch):
 async def test_auto_thread_preserves_existing_thread(monkeypatch):
     """If message is already in a thread, thread_id is not overridden."""
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
 
     adapter = _make_adapter()
@@ -729,12 +845,22 @@ class TestMatrixConfigBridge:
         monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
         monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
         monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATRIX_THREAD_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("MATRIX_THREAD_HUMAN_CONTINUATION", raising=False)
+        monkeypatch.delenv("MATRIX_OBSERVE_THREAD_CONTEXT", raising=False)
+        monkeypatch.delenv("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES", raising=False)
+        monkeypatch.delenv("MATRIX_AGENT_PEERS", raising=False)
 
         yaml_content = {
             "matrix": {
                 "require_mention": False,
                 "free_response_rooms": ["!room1:example.org", "!room2:example.org"],
                 "auto_thread": False,
+                "thread_require_mention": True,
+                "thread_human_continuation": True,
+                "observe_thread_context": True,
+                "observed_thread_context_messages": 40,
+                "agent_peers": ["@lares:example.org", "@menrva:example.org"],
             }
         }
 
@@ -764,6 +890,39 @@ class TestMatrixConfigBridge:
                 monkeypatch.setenv(
                     "MATRIX_AUTO_THREAD", str(matrix_cfg["auto_thread"]).lower()
                 )
+            if "thread_require_mention" in matrix_cfg and not os.getenv(
+                "MATRIX_THREAD_REQUIRE_MENTION"
+            ):
+                monkeypatch.setenv(
+                    "MATRIX_THREAD_REQUIRE_MENTION",
+                    str(matrix_cfg["thread_require_mention"]).lower(),
+                )
+            if "thread_human_continuation" in matrix_cfg and not os.getenv(
+                "MATRIX_THREAD_HUMAN_CONTINUATION"
+            ):
+                monkeypatch.setenv(
+                    "MATRIX_THREAD_HUMAN_CONTINUATION",
+                    str(matrix_cfg["thread_human_continuation"]).lower(),
+                )
+            if "observe_thread_context" in matrix_cfg and not os.getenv(
+                "MATRIX_OBSERVE_THREAD_CONTEXT"
+            ):
+                monkeypatch.setenv(
+                    "MATRIX_OBSERVE_THREAD_CONTEXT",
+                    str(matrix_cfg["observe_thread_context"]).lower(),
+                )
+            if "observed_thread_context_messages" in matrix_cfg and not os.getenv(
+                "MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES"
+            ):
+                monkeypatch.setenv(
+                    "MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES",
+                    str(matrix_cfg["observed_thread_context_messages"]),
+                )
+            ap = matrix_cfg.get("agent_peers")
+            if ap is not None and not os.getenv("MATRIX_AGENT_PEERS"):
+                if isinstance(ap, list):
+                    ap = ",".join(str(v) for v in ap)
+                monkeypatch.setenv("MATRIX_AGENT_PEERS", str(ap))
 
         assert os.getenv("MATRIX_REQUIRE_MENTION") == "false"
         assert (
@@ -771,6 +930,11 @@ class TestMatrixConfigBridge:
             == "!room1:example.org,!room2:example.org"
         )
         assert os.getenv("MATRIX_AUTO_THREAD") == "false"
+        assert os.getenv("MATRIX_THREAD_REQUIRE_MENTION") == "true"
+        assert os.getenv("MATRIX_THREAD_HUMAN_CONTINUATION") == "true"
+        assert os.getenv("MATRIX_OBSERVE_THREAD_CONTEXT") == "true"
+        assert os.getenv("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES") == "40"
+        assert os.getenv("MATRIX_AGENT_PEERS") == "@lares:example.org,@menrva:example.org"
 
     def test_yaml_bridge_sets_dm_mention_threads(self, monkeypatch, tmp_path):
         """Matrix YAML dm_mention_threads should bridge to env var."""

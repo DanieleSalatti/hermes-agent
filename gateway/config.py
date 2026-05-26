@@ -1110,6 +1110,19 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+                if "thread_require_mention" in matrix_cfg and not os.getenv("MATRIX_THREAD_REQUIRE_MENTION"):
+                    os.environ["MATRIX_THREAD_REQUIRE_MENTION"] = str(matrix_cfg["thread_require_mention"]).lower()
+                if "thread_human_continuation" in matrix_cfg and not os.getenv("MATRIX_THREAD_HUMAN_CONTINUATION"):
+                    os.environ["MATRIX_THREAD_HUMAN_CONTINUATION"] = str(matrix_cfg["thread_human_continuation"]).lower()
+                if "observe_thread_context" in matrix_cfg and not os.getenv("MATRIX_OBSERVE_THREAD_CONTEXT"):
+                    os.environ["MATRIX_OBSERVE_THREAD_CONTEXT"] = str(matrix_cfg["observe_thread_context"]).lower()
+                if "observed_thread_context_messages" in matrix_cfg and not os.getenv("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES"):
+                    os.environ["MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES"] = str(matrix_cfg["observed_thread_context_messages"])
+                ap = matrix_cfg.get("agent_peers")
+                if ap is not None and not os.getenv("MATRIX_AGENT_PEERS"):
+                    if isinstance(ap, list):
+                        ap = ",".join(str(v) for v in ap)
+                    os.environ["MATRIX_AGENT_PEERS"] = str(ap)
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
 

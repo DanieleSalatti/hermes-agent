@@ -33,11 +33,12 @@ import mimetypes
 import os
 import re
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from html import escape as _html_escape
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Deque, Dict, Optional, Set, Tuple
 
 try:
     from mautrix.types import (
@@ -118,6 +119,16 @@ class _MatrixApprovalPrompt:
         self.message_id = message_id
         self.resolved = resolved
         self.bot_reaction_events: dict[str, str] = {}  # emoji -> event_id
+
+
+@dataclass
+class _ObservedMatrixMessage:
+    """A Matrix thread message stored for later context injection."""
+
+    event_id: str
+    sender: str
+    display_name: str
+    body: str
 
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
@@ -399,8 +410,6 @@ class MatrixAdapter(BasePlatformAdapter):
         # Set of room IDs we've joined
         self._joined_rooms: Set[str] = set()
         # Event deduplication (bounded deque keeps newest entries)
-        from collections import deque
-
         self._processed_events: deque = deque(maxlen=1000)
         self._processed_events_set: set = set()
 
@@ -415,6 +424,19 @@ class MatrixAdapter(BasePlatformAdapter):
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in {"false", "0", "no"}
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
+        self._thread_human_continuation: bool = self._parse_bool_config(
+            config, "thread_human_continuation", "MATRIX_THREAD_HUMAN_CONTINUATION", False
+        )
+        self._observe_thread_context: bool = self._parse_bool_config(
+            config, "observe_thread_context", "MATRIX_OBSERVE_THREAD_CONTEXT", False
+        )
+        self._observed_thread_context_messages: int = self._parse_int_config(
+            config, "observed_thread_context_messages", "MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES", 30
+        )
+        self._agent_peers: Set[str] = self._parse_string_set_config(
+            config, "agent_peers", "MATRIX_AGENT_PEERS"
+        )
+        self._thread_observations: Dict[Tuple[str, str], Deque[_ObservedMatrixMessage]] = {}
         free_rooms_raw = config.extra.get("free_response_rooms")
         if free_rooms_raw is None:
             free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
@@ -523,6 +545,41 @@ class MatrixAdapter(BasePlatformAdapter):
         return os.getenv(
             "MATRIX_THREAD_REQUIRE_MENTION", "false"
         ).lower() in {"true", "1", "yes", "on"}
+
+    @staticmethod
+    def _parse_bool_config(config, key: str, env_var: str, default: bool) -> bool:
+        configured = config.extra.get(key)
+        if configured is None:
+            configured = os.getenv(env_var)
+        if configured is None:
+            return default
+        if isinstance(configured, bool):
+            return configured
+        if isinstance(configured, str):
+            return configured.strip().lower() not in {"false", "0", "no", "off", ""}
+        return bool(configured)
+
+    @staticmethod
+    def _parse_int_config(config, key: str, env_var: str, default: int) -> int:
+        configured = config.extra.get(key)
+        if configured is None:
+            configured = os.getenv(env_var)
+        try:
+            value = int(configured) if configured is not None else default
+        except (TypeError, ValueError):
+            return default
+        return max(1, value)
+
+    @staticmethod
+    def _parse_string_set_config(config, key: str, env_var: str) -> Set[str]:
+        configured = config.extra.get(key)
+        if configured is None:
+            configured = os.getenv(env_var, "")
+        if isinstance(configured, (list, tuple, set)):
+            values = configured
+        else:
+            values = str(configured).split(",")
+        return {str(value).strip() for value in values if str(value).strip()}
 
     # ------------------------------------------------------------------
     # E2EE helpers
@@ -1702,6 +1759,68 @@ class MatrixAdapter(BasePlatformAdapter):
                 room_id, sender, event_id, event_ts, source_content, relates_to
             )
 
+    def _thread_buffer_key(self, room_id: str, thread_id: Optional[str]) -> Optional[Tuple[str, str]]:
+        if not room_id or not thread_id:
+            return None
+        return room_id, str(thread_id)
+
+    def _is_agent_peer(self, sender: str) -> bool:
+        return bool(sender and sender in self._agent_peers)
+
+    def _observe_thread_message(
+        self,
+        room_id: str,
+        thread_id: Optional[str],
+        event_id: str,
+        sender: str,
+        display_name: str,
+        body: str,
+    ) -> None:
+        if not self._observe_thread_context:
+            return
+        key = self._thread_buffer_key(room_id, thread_id)
+        if key is None or not body:
+            return
+        limit = self._observed_thread_context_messages
+        buf = self._thread_observations.get(key)
+        if buf is None or buf.maxlen != limit:
+            buf = deque(maxlen=limit)
+            self._thread_observations[key] = buf
+        if event_id and any(msg.event_id == event_id for msg in buf):
+            return
+        buf.append(
+            _ObservedMatrixMessage(
+                event_id=event_id,
+                sender=sender,
+                display_name=display_name or sender,
+                body=body,
+            )
+        )
+
+    def _format_observed_thread_context(
+        self,
+        room_id: str,
+        thread_id: Optional[str],
+        current_event_id: str,
+    ) -> Optional[str]:
+        if not self._observe_thread_context:
+            return None
+        key = self._thread_buffer_key(room_id, thread_id)
+        if key is None:
+            return None
+        messages = [
+            msg
+            for msg in self._thread_observations.get(key, ())
+            if msg.event_id != current_event_id
+        ]
+        if not messages:
+            return None
+        lines = ["[Matrix thread context observed before this message]"]
+        for msg in messages[-self._observed_thread_context_messages:]:
+            label = msg.display_name or msg.sender
+            lines.append(f"[{label}] {msg.body}")
+        return "\n".join(lines)
+
     async def _resolve_message_context(
         self,
         room_id: str,
@@ -1723,6 +1842,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if relates_to.get("rel_type") == "m.thread":
             thread_id = relates_to.get("event_id")
 
+        display_name = await self._get_display_name(room_id, sender)
+        thread_context = self._format_observed_thread_context(room_id, thread_id, event_id)
+
         formatted_body = source_content.get("formatted_body")
         # m.mentions.user_ids (MSC3952 / Matrix v1.7) — authoritative mention signal.
         mentions_block = source_content.get("m.mentions") or {}
@@ -1732,6 +1854,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
 
         # Require-mention gating.
+        should_process = True
         if not is_dm:
             # allowed_rooms check (whitelist — must pass before other gating).
             # When set, messages from rooms NOT in this whitelist are silently
@@ -1744,33 +1867,47 @@ class MatrixAdapter(BasePlatformAdapter):
                     room_id,
                 )
                 return None
+            else:
+                is_free_room = room_id in self._free_rooms
+                in_bot_thread = bool(thread_id and thread_id in self._threads)
+                sender_is_agent_peer = self._is_agent_peer(sender)
+                human_thread_continuation = (
+                    self._thread_human_continuation
+                    and in_bot_thread
+                    and not sender_is_agent_peer
+                )
+                if self._require_mention and not is_free_room and not in_bot_thread:
+                    if not is_mentioned:
+                        logger.debug(
+                            "Matrix: ignoring message %s in %s — no @mention "
+                            "(set MATRIX_REQUIRE_MENTION=false to disable)",
+                            event_id,
+                            room_id,
+                        )
+                        should_process = False
 
-            is_free_room = room_id in self._free_rooms
-            in_bot_thread = bool(thread_id and thread_id in self._threads)
-            if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned:
-                    logger.debug(
-                        "Matrix: ignoring message %s in %s — no @mention "
-                        "(set MATRIX_REQUIRE_MENTION=false to disable)",
-                        event_id,
-                        room_id,
-                    )
-                    return None
+                # Thread-level @mention gating: even in a bot-participated thread,
+                # require @mention when thread_require_mention is enabled, unless a
+                # human continuation policy explicitly allows the message. Agent
+                # peers remain explicit-only, preventing multi-agent loops.
+                elif (
+                    self._require_mention
+                    and self._thread_require_mention
+                    and in_bot_thread
+                    and not is_free_room
+                ):
+                    if not is_mentioned and not human_thread_continuation:
+                        logger.debug(
+                            "Matrix: ignoring message %s in thread %s — "
+                            "no @mention (thread_require_mention=true)",
+                            event_id,
+                            thread_id,
+                        )
+                        should_process = False
 
-            # Thread-level @mention gating: even in a bot-participated thread,
-            # require @mention when thread_require_mention is enabled.
-            # Prevents infinite reply loops in multi-agent shared rooms
-            # where multiple bots all participate in the same thread.
-            elif (self._thread_require_mention and in_bot_thread
-                  and not is_free_room):
-                if not is_mentioned:
-                    logger.debug(
-                        "Matrix: ignoring message %s in thread %s — "
-                        "no @mention (thread_require_mention=true)",
-                        event_id,
-                        thread_id,
-                    )
-                    return None
+        if not should_process:
+            self._observe_thread_message(room_id, thread_id, event_id, sender, display_name, body)
+            return None
 
         # DM mention-thread.
         if is_dm and not thread_id and self._dm_mention_threads and is_mentioned:
@@ -1786,7 +1923,6 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_id = event_id
             self._threads.mark(thread_id)
 
-        display_name = await self._get_display_name(room_id, sender)
         source = self.build_source(
             chat_id=room_id,
             chat_type=chat_type,
@@ -1797,10 +1933,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         if thread_id:
             self._threads.mark(thread_id)
+            self._observe_thread_message(room_id, thread_id, event_id, sender, display_name, body)
 
         self._background_read_receipt(room_id, event_id)
 
-        return body, is_dm, chat_type, thread_id, display_name, source
+        return body, is_dm, chat_type, thread_id, display_name, source, thread_context
 
     async def _handle_text_message(
         self,
@@ -1826,7 +1963,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if ctx is None:
             return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
+        body, is_dm, chat_type, thread_id, display_name, source, thread_context = ctx
 
         # Reply-to detection.
         reply_to = None
@@ -1861,6 +1998,7 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            channel_context=thread_context,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -2022,7 +2160,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if ctx is None:
             return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
+        body, is_dm, chat_type, thread_id, display_name, source, thread_context = ctx
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
@@ -2043,6 +2181,7 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            channel_context=thread_context,
         )
 
         await self.handle_message(msg_event)
@@ -2657,7 +2796,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._user_id and ":" in self._user_id:
             localpart = self._user_id.split(":")[0].lstrip("@")
             if localpart and re.search(
-                r"\b" + re.escape(localpart) + r"\b", body, re.IGNORECASE
+                r"(?<![\w])@" + re.escape(localpart) + r"\b",
+                body,
+                re.IGNORECASE,
             ):
                 return True
         if formatted_body and self._user_id:
