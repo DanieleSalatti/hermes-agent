@@ -82,6 +82,17 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
 }
 
+_SESSION_VAR_ORDER = (
+    _SESSION_PLATFORM,
+    _SESSION_CHAT_ID,
+    _SESSION_CHAT_NAME,
+    _SESSION_THREAD_ID,
+    _SESSION_USER_ID,
+    _SESSION_USER_NAME,
+    _SESSION_KEY,
+    _SESSION_MESSAGE_ID,
+)
+
 
 def set_current_session_id(session_id: str) -> None:
     """Synchronize ``HERMES_SESSION_ID`` across ContextVar and ``os.environ``.
@@ -140,17 +151,19 @@ def clear_session_vars(tokens: list) -> None:
     to ensure the "explicitly cleared" state is distinguishable from
     "never set" (which holds the ``_UNSET`` sentinel).
     """
-    for var in (
-        _SESSION_PLATFORM,
-        _SESSION_CHAT_ID,
-        _SESSION_CHAT_NAME,
-        _SESSION_THREAD_ID,
-        _SESSION_USER_ID,
-        _SESSION_USER_NAME,
-        _SESSION_KEY,
-        _SESSION_MESSAGE_ID,
-    ):
+    for var in _SESSION_VAR_ORDER:
         var.set("")
+
+
+def restore_session_vars(tokens: list) -> None:
+    """Restore session context variables to their previous values.
+
+    Use for short nested scopes that need temporary session context without
+    permanently clearing the caller's context. Gateway turn cleanup should keep
+    using ``clear_session_vars`` so stale ``os.environ`` values cannot leak in.
+    """
+    for var, token in zip(_SESSION_VAR_ORDER, tokens):
+        var.reset(token)
 
 
 def get_session_env(name: str, default: str = "") -> str:

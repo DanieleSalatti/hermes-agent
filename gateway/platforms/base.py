@@ -3660,9 +3660,26 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                            from gateway.session_context import (
+                                restore_session_vars,
+                                set_session_vars,
                             )
+                            _tts_context_tokens = set_session_vars(
+                                platform=self.platform.value,
+                                chat_id=event.source.chat_id,
+                                chat_name=event.source.chat_name or "",
+                                thread_id=event.source.thread_id or "",
+                                user_id=event.source.user_id or "",
+                                user_name=event.source.user_name or "",
+                                session_key=session_key,
+                                message_id=event.message_id or "",
+                            )
+                            try:
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_text
+                                )
+                            finally:
+                                restore_session_vars(_tts_context_tokens)
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")
                     except Exception as tts_err:
