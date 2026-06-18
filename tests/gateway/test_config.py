@@ -410,6 +410,79 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    def test_bridges_matrix_peer_policy_from_config_yaml(self, tmp_path, monkeypatch):
+        """Top-level matrix peer-policy settings should reach runtime config."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "matrix:\n"
+            "  thread_require_mention: true\n"
+            "  thread_human_continuation: true\n"
+            "  observe_thread_context: true\n"
+            "  observed_thread_context_messages: 30\n"
+            "  max_consecutive_agent_peer_turns: 6\n"
+            "  agent_peers:\n"
+            "    - \"@menrva:example.org\"\n"
+            "    - \"@lares:example.org\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for name in (
+            "MATRIX_THREAD_REQUIRE_MENTION",
+            "MATRIX_THREAD_HUMAN_CONTINUATION",
+            "MATRIX_OBSERVE_THREAD_CONTEXT",
+            "MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES",
+            "MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS",
+            "MATRIX_AGENT_PEERS",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.MATRIX].extra
+        assert extra["thread_require_mention"] is True
+        assert extra["thread_human_continuation"] is True
+        assert extra["observe_thread_context"] is True
+        assert extra["observed_thread_context_messages"] == 30
+        assert extra["max_consecutive_agent_peer_turns"] == 6
+        assert extra["agent_peers"] == ["@menrva:example.org", "@lares:example.org"]
+        assert os.environ.get("MATRIX_THREAD_REQUIRE_MENTION") == "true"
+        assert os.environ.get("MATRIX_THREAD_HUMAN_CONTINUATION") == "true"
+        assert os.environ.get("MATRIX_OBSERVE_THREAD_CONTEXT") == "true"
+        assert os.environ.get("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES") == "30"
+        assert os.environ.get("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS") == "6"
+        assert os.environ.get("MATRIX_AGENT_PEERS") == (
+            "@menrva:example.org,@lares:example.org"
+        )
+
+    def test_matrix_peer_policy_env_overrides_config_yaml(self, tmp_path, monkeypatch):
+        """MATRIX_* env vars should override top-level matrix peer-policy YAML."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "matrix:\n"
+            "  thread_human_continuation: false\n"
+            "  observed_thread_context_messages: 3\n"
+            "  agent_peers:\n"
+            "    - \"@yaml-peer:example.org\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+        monkeypatch.setenv("MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES", "9")
+        monkeypatch.setenv("MATRIX_AGENT_PEERS", "@env-peer:example.org")
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.MATRIX].extra
+        assert extra["thread_human_continuation"] == "true"
+        assert extra["observed_thread_context_messages"] == "9"
+        assert extra["agent_peers"] == "@env-peer:example.org"
+
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"

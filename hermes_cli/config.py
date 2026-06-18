@@ -2106,6 +2106,12 @@ DEFAULT_CONFIG = {
     # Matrix platform settings (gateway mode)
     "matrix": {
         "require_mention": True,       # Require @mention to respond in rooms
+        "thread_require_mention": False,  # If True, require @mention in threads too (multi-agent threads)
+        "thread_human_continuation": False,  # If True, human messages reset peer-agent turn limits in threads
+        "observe_thread_context": False,     # If True, remember unhandled thread messages for later context injection
+        "observed_thread_context_messages": 30,  # Max observed Matrix thread messages to inject as context
+        "max_consecutive_agent_peer_turns": 1,   # Max peer-agent turns before requiring a human reset (0 disables limit)
+        "agent_peers": "",             # Comma-separated Matrix user IDs for peer agents
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
     },

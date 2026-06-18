@@ -773,6 +773,19 @@ def load_gateway_config() -> GatewayConfig:
     """
     _home = get_hermes_home()
     gw_data: dict = {}
+    _matrix_policy_env_keys = {
+        "thread_require_mention": "MATRIX_THREAD_REQUIRE_MENTION",
+        "thread_human_continuation": "MATRIX_THREAD_HUMAN_CONTINUATION",
+        "observe_thread_context": "MATRIX_OBSERVE_THREAD_CONTEXT",
+        "observed_thread_context_messages": "MATRIX_OBSERVED_THREAD_CONTEXT_MESSAGES",
+        "max_consecutive_agent_peer_turns": "MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS",
+        "agent_peers": "MATRIX_AGENT_PEERS",
+    }
+    _matrix_policy_env_overrides = {
+        cfg_key: os.getenv(env_key)
+        for cfg_key, env_key in _matrix_policy_env_keys.items()
+        if os.getenv(env_key) is not None
+    }
 
     # Legacy fallback: gateway.json provides the base layer.
     # config.yaml keys always win when both specify the same setting.
@@ -951,6 +964,17 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if plat == Platform.MATRIX:
+                    for _matrix_key in (
+                        "thread_require_mention",
+                        "thread_human_continuation",
+                        "observe_thread_context",
+                        "observed_thread_context_messages",
+                        "max_consecutive_agent_peer_turns",
+                        "agent_peers",
+                    ):
+                        if _matrix_key in platform_cfg:
+                            bridged[_matrix_key] = platform_cfg[_matrix_key]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
@@ -1258,6 +1282,15 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+                for cfg_key, env_key in _matrix_policy_env_keys.items():
+                    value = matrix_cfg.get(cfg_key)
+                    if value is None or os.getenv(env_key):
+                        continue
+                    if isinstance(value, list):
+                        value = ",".join(str(v) for v in value)
+                    elif isinstance(value, bool):
+                        value = str(value).lower()
+                    os.environ[env_key] = str(value)
 
             # Feishu settings → env vars (env vars take precedence)
             feishu_cfg = yaml_cfg.get("feishu", {})
@@ -1277,6 +1310,9 @@ def load_gateway_config() -> GatewayConfig:
 
     # Override with environment variables
     _apply_env_overrides(config)
+    if _matrix_policy_env_overrides:
+        matrix_config = config.platforms.setdefault(Platform.MATRIX, PlatformConfig())
+        matrix_config.extra.update(_matrix_policy_env_overrides)
     
     # --- Validate loaded values ---
     _validate_gateway_config(config)
