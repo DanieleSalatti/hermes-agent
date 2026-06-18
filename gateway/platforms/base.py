@@ -4291,15 +4291,36 @@ class BasePlatformAdapter(ABC):
                         and text_content
                         and not media_files):
                     try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        from tools.tts_tool import (
+                            check_tts_requirements,
+                            text_to_speech_tool,
+                        )
                         if check_tts_requirements():
                             import json as _json
+                            from gateway.session_context import (
+                                restore_session_vars,
+                                set_session_vars,
+                            )
+
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                            _tts_tokens = set_session_vars(
+                                platform=event.source.platform.value,
+                                chat_id=event.source.chat_id,
+                                chat_name=event.source.chat_name or "",
+                                thread_id=event.source.thread_id or "",
+                                user_id=event.source.user_id or "",
+                                user_name=event.source.user_name or "",
+                                session_key=session_key,
+                                message_id=event.message_id or event.source.message_id or "",
                             )
+                            try:
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_text
+                                )
+                            finally:
+                                restore_session_vars(_tts_tokens)
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")
                     except Exception as tts_err:

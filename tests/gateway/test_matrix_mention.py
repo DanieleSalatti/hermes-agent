@@ -90,11 +90,14 @@ class TestIsBotMentioned:
     def test_full_user_id_in_body(self):
         assert self.adapter._is_bot_mentioned("hey @hermes:example.org help")
 
-    def test_localpart_in_body(self):
-        assert self.adapter._is_bot_mentioned("hermes can you help?")
+    def test_bare_localpart_in_body_is_not_mention(self):
+        assert not self.adapter._is_bot_mentioned("hermes can you help?")
 
-    def test_localpart_case_insensitive(self):
-        assert self.adapter._is_bot_mentioned("HERMES can you help?")
+    def test_bare_localpart_case_insensitive_is_not_mention(self):
+        assert not self.adapter._is_bot_mentioned("HERMES can you help?")
+
+    def test_at_localpart_in_body(self):
+        assert self.adapter._is_bot_mentioned("@hermes can you help?")
 
     def test_matrix_pill_in_formatted_body(self):
         html = '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> help'
@@ -446,6 +449,244 @@ async def test_require_mention_bot_participated_thread(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dm_message_explicitly_mentioning_agent_peer_is_ignored(monkeypatch):
+    """Shared-agent DMs should observe but not answer messages addressed to another bot."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+
+    event = _make_event(
+        "@lares:example.org what do you think?",
+        mention_user_ids=["@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_message_with_matrix_to_peer_pill_is_ignored(monkeypatch):
+    """Matrix mention pills without MXIDs should not become human-continuation replies."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "[lares](https://matrix.to/#/) what do you think?",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_reply_to_self_with_peer_mention_is_ignored(monkeypatch):
+    """Reply metadata can mention this bot; visible peer mentions still route to the peer."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "[lares](https://matrix.to/#/@lares:example.org) what do you think?",
+        thread_id="$thread1",
+        mention_user_ids=["@hermes:example.org", "@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_reply_with_visible_self_and_peer_mentions_is_handled(monkeypatch):
+    """If the user visibly mentions both bots, this bot is genuinely addressed too."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "@hermes and @lares, compare notes",
+        thread_id="$thread1",
+        mention_user_ids=["@hermes:example.org", "@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thread_human_continuation_allows_human_without_mention(monkeypatch):
+    """Human replies may continue a participated thread without re-mentioning."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event("continue this thought", thread_id="$thread1")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_thread_continuation_requires_explicit_mention(monkeypatch):
+    """Agent peers are observed but do not auto-continue participated threads."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "I think Hermes should consider routing.",
+        sender="@menrva:example.org",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_explicit_reply_budget_blocks_second_peer_turn(monkeypatch):
+    """Only one consecutive explicit peer-agent invocation is handled by default."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS", "1")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    first = _make_event(
+        "@hermes sanity-check this",
+        sender="@menrva:example.org",
+        event_id="$peer1",
+        thread_id="$thread1",
+    )
+    second = _make_event(
+        "@hermes continue",
+        sender="@menrva:example.org",
+        event_id="$peer2",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(first)
+    await adapter._on_room_message(second)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.message_id == "$peer1"
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_reply_budget_resets_after_human_turn(monkeypatch):
+    """A human message in the thread resets the peer-agent reply budget."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS", "1")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes first peer turn",
+            sender="@menrva:example.org",
+            event_id="$peer1",
+            thread_id="$thread1",
+        )
+    )
+    await adapter._on_room_message(
+        _make_event("human reset", event_id="$human", thread_id="$thread1")
+    )
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes peer after reset",
+            sender="@menrva:example.org",
+            event_id="$peer2",
+            thread_id="$thread1",
+        )
+    )
+
+    assert adapter.handle_message.await_count == 3
+    assert adapter.handle_message.await_args_list[-1].args[0].message_id == "$peer2"
+
+
+@pytest.mark.asyncio
+async def test_observed_thread_context_is_injected_on_later_mention(monkeypatch):
+    """Ignored thread messages are included when the bot is later invoked."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_OBSERVE_THREAD_CONTEXT", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    ignored = _make_event(
+        "Lares made a routing objection.",
+        sender="@menrva:example.org",
+        event_id="$evt-peer",
+        thread_id="$thread1",
+    )
+    invoked = _make_event(
+        "@hermes respond to Menrva",
+        event_id="$evt-human",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(ignored)
+    await adapter._on_room_message(invoked)
+
+    adapter.handle_message.assert_awaited_once()
+    msg_event = adapter.handle_message.await_args.args[0]
+    assert "[Matrix thread context observed before this message]" in msg_event.channel_context
+    assert "[menrva] Lares made a routing objection." in msg_event.channel_context
+
+
+@pytest.mark.asyncio
 async def test_require_mention_disabled(monkeypatch):
     """MATRIX_REQUIRE_MENTION=false: all messages processed."""
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
@@ -459,6 +700,244 @@ async def test_require_mention_disabled(monkeypatch):
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == "hello without mention"
+
+
+@pytest.mark.asyncio
+async def test_dm_message_explicitly_mentioning_agent_peer_is_ignored(monkeypatch):
+    """Shared-agent DMs should observe but not answer messages addressed to another bot."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+
+    event = _make_event(
+        "@lares:example.org what do you think?",
+        mention_user_ids=["@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_message_with_matrix_to_peer_pill_is_ignored(monkeypatch):
+    """Matrix mention pills without MXIDs should not become human-continuation replies."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "[lares](https://matrix.to/#/) what do you think?",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_reply_to_self_with_peer_mention_is_ignored(monkeypatch):
+    """Reply metadata can mention this bot; visible peer mentions still route to the peer."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "[lares](https://matrix.to/#/@lares:example.org) what do you think?",
+        thread_id="$thread1",
+        mention_user_ids=["@hermes:example.org", "@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_reply_with_visible_self_and_peer_mentions_is_handled(monkeypatch):
+    """If the user visibly mentions both bots, this bot is genuinely addressed too."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@lares:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "@hermes and @lares, compare notes",
+        thread_id="$thread1",
+        mention_user_ids=["@hermes:example.org", "@lares:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thread_human_continuation_allows_human_without_mention(monkeypatch):
+    """Human replies may continue a participated thread without re-mentioning."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event("continue this thought", thread_id="$thread1")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_thread_continuation_requires_explicit_mention(monkeypatch):
+    """Agent peers are observed but do not auto-continue participated threads."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    event = _make_event(
+        "I think Hermes should consider routing.",
+        sender="@menrva:example.org",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_explicit_reply_budget_blocks_second_peer_turn(monkeypatch):
+    """Only one consecutive explicit peer-agent invocation is handled by default."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS", "1")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    first = _make_event(
+        "@hermes sanity-check this",
+        sender="@menrva:example.org",
+        event_id="$peer1",
+        thread_id="$thread1",
+    )
+    second = _make_event(
+        "@hermes continue",
+        sender="@menrva:example.org",
+        event_id="$peer2",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(first)
+    await adapter._on_room_message(second)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.message_id == "$peer1"
+
+
+@pytest.mark.asyncio
+async def test_agent_peer_reply_budget_resets_after_human_turn(monkeypatch):
+    """A human message in the thread resets the peer-agent reply budget."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_MAX_CONSECUTIVE_AGENT_PEER_TURNS", "1")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes first peer turn",
+            sender="@menrva:example.org",
+            event_id="$peer1",
+            thread_id="$thread1",
+        )
+    )
+    await adapter._on_room_message(
+        _make_event("human reset", event_id="$human", thread_id="$thread1")
+    )
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes peer after reset",
+            sender="@menrva:example.org",
+            event_id="$peer2",
+            thread_id="$thread1",
+        )
+    )
+
+    assert adapter.handle_message.await_count == 3
+    assert adapter.handle_message.await_args_list[-1].args[0].message_id == "$peer2"
+
+
+@pytest.mark.asyncio
+async def test_observed_thread_context_is_injected_on_later_mention(monkeypatch):
+    """Ignored thread messages are included when the bot is later invoked."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_THREAD_HUMAN_CONTINUATION", "true")
+    monkeypatch.setenv("MATRIX_OBSERVE_THREAD_CONTEXT", "true")
+    monkeypatch.setenv("MATRIX_AGENT_PEERS", "@menrva:example.org")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread1")
+
+    ignored = _make_event(
+        "Lares made a routing objection.",
+        sender="@menrva:example.org",
+        event_id="$evt-peer",
+        thread_id="$thread1",
+    )
+    invoked = _make_event(
+        "@hermes respond to Menrva",
+        event_id="$evt-human",
+        thread_id="$thread1",
+    )
+
+    await adapter._on_room_message(ignored)
+    await adapter._on_room_message(invoked)
+
+    adapter.handle_message.assert_awaited_once()
+    msg_event = adapter.handle_message.await_args.args[0]
+    assert "[Matrix thread context observed before this message]" in msg_event.channel_context
+    assert "[menrva] Lares made a routing objection." in msg_event.channel_context
 
 
 @pytest.mark.asyncio

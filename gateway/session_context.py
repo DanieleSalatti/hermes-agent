@@ -140,28 +140,31 @@ def set_session_vars(
     return tokens
 
 
+_SESSION_VARS = (
+    _SESSION_PLATFORM,
+    _SESSION_CHAT_ID,
+    _SESSION_CHAT_NAME,
+    _SESSION_THREAD_ID,
+    _SESSION_USER_ID,
+    _SESSION_USER_NAME,
+    _SESSION_KEY,
+    _SESSION_ID,
+    _SESSION_MESSAGE_ID,
+)
+
+
 def clear_session_vars(tokens: list) -> None:
     """Mark session context variables as explicitly cleared.
 
     Sets all variables to ``""`` so that ``get_session_env`` returns an empty
     string instead of falling back to (potentially stale) ``os.environ``
-    values.  The *tokens* argument is accepted for API compatibility with
+    values. The *tokens* argument is accepted for API compatibility with
     callers that saved the return value of ``set_session_vars``, but the
     actual clearing uses ``var.set("")`` rather than ``var.reset(token)``
     to ensure the "explicitly cleared" state is distinguishable from
     "never set" (which holds the ``_UNSET`` sentinel).
     """
-    for var in (
-        _SESSION_PLATFORM,
-        _SESSION_CHAT_ID,
-        _SESSION_CHAT_NAME,
-        _SESSION_THREAD_ID,
-        _SESSION_USER_ID,
-        _SESSION_USER_NAME,
-        _SESSION_KEY,
-        _SESSION_ID,
-        _SESSION_MESSAGE_ID,
-    ):
+    for var in _SESSION_VARS:
         var.set("")
     try:
         from agent.runtime_cwd import clear_session_cwd
@@ -169,6 +172,21 @@ def clear_session_vars(tokens: list) -> None:
         clear_session_cwd()
     except Exception:
         pass
+
+
+def restore_session_vars(tokens: list) -> None:
+    """Restore session context variables from ``set_session_vars`` tokens.
+
+    Use this for nested, temporary session-context overrides inside gateway
+    handling (for example, auto-TTS calls after the main runner has cleared the
+    ambient context). ``clear_session_vars`` intentionally suppresses env
+    fallback; this helper is the stack-safe counterpart for scoped overrides.
+    """
+    for var, token in zip(reversed(_SESSION_VARS), reversed(tokens or [])):
+        try:
+            var.reset(token)
+        except (RuntimeError, ValueError):
+            var.set("")
 
 
 def get_session_env(name: str, default: str = "") -> str:

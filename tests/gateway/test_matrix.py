@@ -1700,6 +1700,7 @@ class TestMatrixPasswordLoginDeviceId:
                 "user_id": "@bot:example.org",
                 "password": "secret",
                 "device_id": "STABLE_PW_DEVICE",
+                "e2ee_mode": "off",
             },
         )
         adapter = MatrixAdapter(config)
