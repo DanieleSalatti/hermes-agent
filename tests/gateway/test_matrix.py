@@ -525,8 +525,8 @@ class TestMatrixDmDetection:
         assert await self.adapter._is_dm_room("!project:ex.org") is False
 
     @pytest.mark.asyncio
-    async def test_named_room_overrides_stale_dm_cache(self):
-        """Explicit room names should defeat stale/conflicting m.direct data."""
+    async def test_named_direct_room_remains_dm_with_conflict_diagnostic(self):
+        """Named DMs are still DMs; the name is only diagnostic conflict metadata."""
         self.adapter._joined_rooms = {"!stale:ex.org"}
         self.adapter._dm_rooms = {"!stale:ex.org": True}
         self.adapter._client = MagicMock()
@@ -540,9 +540,46 @@ class TestMatrixDmDetection:
 
         identity = await self.adapter._resolve_room_identity("!stale:ex.org")
 
-        assert identity.chat_type == "room"
+        assert identity.chat_type == "dm"
         assert identity.conflict is True
-        assert await self.adapter._is_dm_room("!stale:ex.org") is False
+        assert await self.adapter._is_dm_room("!stale:ex.org") is True
+
+    @pytest.mark.asyncio
+    async def test_named_direct_room_does_not_use_room_auto_threading(self):
+        """Room auto-threading must not apply to a named room marked as m.direct."""
+        self.adapter._joined_rooms = {"!named-dm:ex.org"}
+        self.adapter._dm_rooms = {"!named-dm:ex.org": True}
+        self.adapter._auto_thread = True
+        self.adapter._dm_auto_thread = False
+        self.adapter._require_mention = False
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(
+            side_effect=lambda room_id, event_type: {"content": {"name": "Lares DM"}}
+            if event_type == "m.room.name"
+            else (_ for _ in ()).throw(Exception("no alias"))
+        )
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!named-dm:ex.org",
+            sender="@alice:ex.org",
+            event_id="$named-dm-event",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, is_dm, chat_type, thread_id, _display, source = ctx
+        assert is_dm is True
+        assert chat_type == "dm"
+        assert thread_id is None
+        assert source.chat_type == "dm"
 
     @pytest.mark.asyncio
     async def test_canonical_alias_used_when_name_missing(self):

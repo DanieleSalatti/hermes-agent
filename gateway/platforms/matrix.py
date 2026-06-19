@@ -3827,8 +3827,10 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> MatrixRoomIdentity:
         """Resolve Matrix room identity without member-count DM heuristics.
 
-        Matrix ``m.direct`` account data is the authoritative DM signal, but
-        explicitly named rooms win over stale/conflicting DM account data.
+        Matrix ``m.direct`` account data is the authoritative DM signal.
+        Explicit names are retained as conflict diagnostics because named DMs
+        are valid Matrix rooms and must not be promoted to project rooms solely
+        because a user gave the direct room a name.
         """
         cached = self._room_identities.get(room_id)
         cached_at = self._room_identity_cached_at.get(room_id, 0.0)
@@ -3846,7 +3848,7 @@ class MatrixAdapter(BasePlatformAdapter):
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
         conflict = bool(is_direct and has_explicit_name)
-        chat_type = "dm" if is_direct and not has_explicit_name else "room"
+        chat_type = "dm" if is_direct else "room"
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(
