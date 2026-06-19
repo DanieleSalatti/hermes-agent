@@ -525,6 +525,33 @@ class TestMatrixDmDetection:
         assert await self.adapter._is_dm_room("!project:ex.org") is False
 
     @pytest.mark.asyncio
+    async def test_two_member_room_with_direct_member_hint_is_dm(self):
+        """Existing DMs may lack m.direct but retain is_direct on member state."""
+        self.adapter._joined_rooms = {"!legacy-dm:ex.org"}
+        self.adapter._dm_rooms = {"!legacy-dm:ex.org": False}
+        self.adapter._client = MagicMock()
+
+        async def get_state_event(room_id, event_type, state_key=None):
+            if event_type == "m.room.member" and state_key == "@alice:ex.org":
+                return {"content": {"membership": "join", "is_direct": True}}
+            if event_type == "m.room.member":
+                return {"content": {"membership": "join"}}
+            raise Exception("no state")
+
+        self.adapter._client.get_state_event = AsyncMock(side_effect=get_state_event)
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+
+        identity = await self.adapter._resolve_room_identity("!legacy-dm:ex.org")
+
+        assert identity.chat_type == "dm"
+        assert identity.is_direct_account_data is False
+        assert identity.joined_member_count == 2
+        assert await self.adapter._is_dm_room("!legacy-dm:ex.org") is True
+
+    @pytest.mark.asyncio
     async def test_named_direct_room_remains_dm_with_conflict_diagnostic(self):
         """Named DMs are still DMs; the name is only diagnostic conflict metadata."""
         self.adapter._joined_rooms = {"!stale:ex.org"}
@@ -569,6 +596,47 @@ class TestMatrixDmDetection:
             room_id="!named-dm:ex.org",
             sender="@alice:ex.org",
             event_id="$named-dm-event",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, is_dm, chat_type, thread_id, _display, source = ctx
+        assert is_dm is True
+        assert chat_type == "dm"
+        assert thread_id is None
+        assert source.chat_type == "dm"
+
+    @pytest.mark.asyncio
+    async def test_direct_member_hint_does_not_use_room_auto_threading(self):
+        """Legacy direct chats without m.direct must not inherit room auto-threading."""
+        self.adapter._joined_rooms = {"!legacy-dm:ex.org"}
+        self.adapter._dm_rooms = {"!legacy-dm:ex.org": False}
+        self.adapter._auto_thread = True
+        self.adapter._dm_auto_thread = False
+        self.adapter._require_mention = False
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._client = MagicMock()
+
+        async def get_state_event(room_id, event_type, state_key=None):
+            if event_type == "m.room.member" and state_key == "@alice:ex.org":
+                return {"content": {"membership": "join", "is_direct": True}}
+            if event_type == "m.room.member":
+                return {"content": {"membership": "join"}}
+            raise Exception("no state")
+
+        self.adapter._client.get_state_event = AsyncMock(side_effect=get_state_event)
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!legacy-dm:ex.org",
+            sender="@alice:ex.org",
+            event_id="$legacy-dm-event",
             body="hello",
             source_content={"body": "hello"},
             relates_to={},

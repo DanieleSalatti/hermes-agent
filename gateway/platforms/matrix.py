@@ -3743,7 +3743,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return str(getattr(content, key))
         return None
 
-    async def _get_room_member_count(self, room_id: str) -> Optional[int]:
+    async def _get_room_members(self, room_id: str) -> Optional[list]:
         state_store = (
             getattr(self._client, "state_store", None) if self._client else None
         )
@@ -3756,9 +3756,43 @@ class MatrixAdapter(BasePlatformAdapter):
         if members is None:
             return None
         try:
-            return len(members)
+            return list(members)
         except TypeError:
             return None
+
+    async def _get_room_member_count(self, room_id: str) -> Optional[int]:
+        members = await self._get_room_members(room_id)
+        return len(members) if members is not None else None
+
+    async def _get_room_direct_member_hint(
+        self,
+        room_id: str,
+        members: Optional[list],
+    ) -> bool:
+        if not self._client or not hasattr(self._client, "get_state_event"):
+            return False
+        if members is None or len(members) > 2:
+            return False
+        for member_id in members:
+            try:
+                event = await self._client.get_state_event(
+                    RoomID(room_id),
+                    "m.room.member",
+                    state_key=str(member_id),
+                )
+            except Exception:
+                continue
+            content = event.get("content") if isinstance(event, dict) else event
+            if content is None:
+                continue
+            value = (
+                content.get("is_direct")
+                if isinstance(content, dict)
+                else getattr(content, "is_direct", False)
+            )
+            if value is True or str(value).lower() in {"true", "1", "yes"}:
+                return True
+        return False
 
     async def _get_room_name(self, room_id: str) -> Optional[str]:
         if not self._client or not hasattr(self._client, "get_state_event"):
@@ -3825,12 +3859,16 @@ class MatrixAdapter(BasePlatformAdapter):
         *,
         force_refresh: bool = False,
     ) -> MatrixRoomIdentity:
-        """Resolve Matrix room identity without member-count DM heuristics.
+        """Resolve Matrix room identity without promoting named rooms to DMs.
 
         Matrix ``m.direct`` account data is the authoritative DM signal.
         Explicit names are retained as conflict diagnostics because named DMs
         are valid Matrix rooms and must not be promoted to project rooms solely
-        because a user gave the direct room a name.
+        because a user gave the direct room a name.  Some clients/homeservers do
+        not populate ``m.direct`` for existing direct chats, so a two-member
+        room with a member-event direct-chat hint is treated as DM-compatible
+        without reviving the old bug where arbitrary two-person project rooms
+        collapsed into DMs.
         """
         cached = self._room_identities.get(room_id)
         cached_at = self._room_identity_cached_at.get(room_id, 0.0)
@@ -3844,11 +3882,16 @@ class MatrixAdapter(BasePlatformAdapter):
         room_name = await self._get_room_name(room_id)
         room_topic = await self._get_room_topic(room_id)
         canonical_alias = await self._get_room_canonical_alias(room_id)
-        member_count = await self._get_room_member_count(room_id)
+        members = await self._get_room_members(room_id)
+        member_count = len(members) if members is not None else None
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
+        direct_member_hint = await self._get_room_direct_member_hint(
+            room_id,
+            members,
+        )
         conflict = bool(is_direct and has_explicit_name)
-        chat_type = "dm" if is_direct else "room"
+        chat_type = "dm" if is_direct or direct_member_hint else "room"
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(
